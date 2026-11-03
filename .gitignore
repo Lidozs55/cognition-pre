@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# 本地素材与产物
+data/
+outputs/
+models/
+*.mp4
+*.avi
+*.mov
+
+# 密钥与环境
+.env

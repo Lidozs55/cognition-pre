@@ -1,0 +1,60 @@
+# cognition-pre 默认配置（与 src/cognition_pre/config.py 中的 dataclass 一一对应）
+# 新增配置项：先改 dataclass，再同步本文件。
+
+capture:
+  source: "0"        # 摄像头索引 / 视频文件路径 / "test:split" 合成源；OBS 虚拟摄像头通常为 "0" 或 "1"
+  backend: auto      # auto | dshow | msmf | ffmpeg（Windows 打开 OBS 虚拟摄像头建议 dshow）
+  target_fps: 30.0   # 文件源播放节拍；摄像头源由设备决定
+  loop_file: true    # 文件源播完是否循环
+
+preprocess:
+  square_crop: true      # M2：中心方形裁切，边长 = min(H, W)
+  model_input_size: 224  # 518 或 224；518 更准但更慢更耗显存
+
+attention:
+  backend: mock          # mock | dinov3（无权重先用 mock 跑通全链路）
+  hf_repo: facebook/dinov3-vits16-pretrain-lvd1689m
+  hf_token_env: HF_TOKEN # DINOv3 权重为 gated 仓库，从该环境变量读 HF token
+  device: cpu            # cpu | cuda
+  fps: 10.0              # 热图更新频率；中间帧复用最近热图
+  layer_start_frac: 0.6  # 取中后层 CLS→patch 注意力的多头平均
+  layer_end_drop: 1      # 丢弃最后 N 层（深层易糊成一片）
+  top_clip_pct: 0.05     # 归一后截掉前 5% 极值，防"注意力孤斑"通吃
+  use_rollout: false     # 预留：跨层 rollout 对照（Phase 1 实现）
+
+color:
+  hz: 10.0                 # 主色计算频率（=数据输出频率，10fps）
+  n_clusters: 5
+  lam: 0.75                # λ：w = 1 + λ·A(x)
+  lab_weights: [0.5, 1.0, 1.0]  # Lab 空间特征权重：L 低、a/b 高
+  sample_budget: 8000      # 单次聚类的像素预算；10Hz 实测调校（20000 时双实例 ~90ms 贴预算）
+  kmeans_batch_size: 2048
+  kmeans_n_init: 2
+  min_mass_frac: 0.02      # 质量占比过小的簇丢弃
+  seed: 0
+  hysteresis_margin: 0.15  # 簇切换迟滞：挑战簇须有 (1+margin) 分数优势才夺主
+  hysteresis_dist: 0.12    # 与上帧主色归一 Lab 距离 <= 该值的候选视为"在位色"
+
+modulation:
+  gamma: 0.3         # mask = γ + (1−γ)·s(x)
+  enabled: true
+
+stability:
+  ema_alpha: 0.05        # 色值 EMA，按 10Hz 更新调校（τ≈2.0s）；改 color.hz 按 α = 1 − exp(−1/(hz·τ)) 重调
+  conf_ema_alpha: 0.03
+  jump_reset_dist: 60.0  # RGB 距离超此值直接置入（防切场景时颜色爬过中间色相）；0 关闭
+
+output:
+  jsonl_path: ""       # 非空则写 JSONL（每行一条 FrameResult）
+  udp_host: ""         # 非空且 udp_port>0 则外发 UDP JSON
+  udp_port: 0
+  ws_url: ""           # 例 ws://127.0.0.1:8765
+  log_every: 1.0       # 控制台打印间隔（秒）；0 关闭
+
+display:
+  show: true
+  window_width: 320    # 预览画布单格宽度
+  show_heatmap: true
+  record_dir: ""       # 非空则录制焦点/氛围两路调制流到该目录（仅展示，不回读）
+
+max_seconds: 0.0      # >0 时定时自动停（自检/批处理用）
