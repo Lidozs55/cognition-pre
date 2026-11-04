@@ -9,7 +9,7 @@ def test_yaml_roundtrip(tmp_path):
     p.write_text(
         """
 attention:
-  backend: dinov3
+  backend: dinov2
   fps: 12
   layer_start_frac: 0.5
 color:
@@ -22,7 +22,7 @@ unknown_section:
     )
     with pytest.warns(UserWarning, match="未知配置项"):
         cfg = load_config(p)
-    assert cfg.attention.backend == "dinov3"
+    assert cfg.attention.backend == "dinov2"
     assert cfg.attention.fps == 12
     assert cfg.attention.layer_start_frac == 0.5
     assert cfg.color.lam == 1.0

@@ -16,6 +16,8 @@
     机制方向相反——抑制在位赢家、强制扫视前进，与本机制"保护在位主色"相反，
     故不标 IOR）：与上帧主色接近的"在位簇"仅在挑战簇有 (1+margin) 分数优势时
     让位，抑制同屏近似簇之间的主色闪烁。
+  - warm-start：上轮簇心作本轮初始化（簇集合时域连贯，迟滞的前提），静态画面
+    每轮的簇心不再从随机状态重聚。
 置信度输出为支配度（胜者得分 / 全簇得分和），见 DominantResult.dominance。
 """
 
@@ -61,6 +63,7 @@ class WeightedDominantColor:
         self.rng = np.random.default_rng(cfg.seed)
         self._w_scale = np.asarray(cfg.lab_weights, dtype=np.float32)
         self._prev_lab: np.ndarray | None = None  # 上帧选中的主色（迟滞基准）
+        self._prev_centers: np.ndarray | None = None  # 上轮簇心（warm-start，簇集合时域连贯）
 
     def compute(self, rgb_u8: np.ndarray, s01: np.ndarray) -> DominantResult:
         """rgb_u8: 裁切帧 RGB uint8（读色基准）；s01: 同尺寸权重图 [0,1]（A 或 1−A）。"""
@@ -91,15 +94,29 @@ class WeightedDominantColor:
             x_feat, x_rgb, ws = feat_grid, rgb_d, wts
         m = x_feat.shape[0]
 
-        # 4) Mini-Batch K-Means（sample_weight 进入簇心与打分）
+        # 4) Mini-Batch K-Means（sample_weight 进入簇心与打分）。
+        #    warm-start（防闪 A）：接得上上轮簇心时只做一次初始化——簇集合时域连贯，
+        #    候选颜色跨帧可比（迟滞选主的前提），且收敛更快；簇数对不上（画面尺寸骤变）
+        #    时退回默认初始化。
         k = min(cfg.n_clusters, max(2, m // 16))
-        km = MiniBatchKMeans(
-            n_clusters=k,
-            batch_size=min(cfg.kmeans_batch_size, m),
-            n_init=cfg.kmeans_n_init,
-            random_state=cfg.seed,
-        )
+        prev = self._prev_centers
+        if prev is not None and prev.shape[0] == k:
+            km = MiniBatchKMeans(
+                n_clusters=k,
+                init=prev,
+                n_init=1,
+                batch_size=min(cfg.kmeans_batch_size, m),
+                random_state=cfg.seed,
+            )
+        else:
+            km = MiniBatchKMeans(
+                n_clusters=k,
+                batch_size=min(cfg.kmeans_batch_size, m),
+                n_init=cfg.kmeans_n_init,
+                random_state=cfg.seed,
+            )
         km.fit(x_feat, sample_weight=ws)
+        self._prev_centers = km.cluster_centers_.copy()
         labels = km.labels_
         total = float(ws.sum())
 

@@ -17,7 +17,7 @@
   模型输入（`preprocess.to_model_rgb`）与颜色计算（`pipeline._color_loop`）。
   新代码不要在别处悄悄转换。
 - **依赖分层**：`uv sync` 的默认安装（core）不含 torch；torch/transformers 只属于
-  `[model]` extra（`uv sync --extra model`），且只能在 `perception/dinov3_backend.py` 内延迟导入。
+  `[model]` extra（`uv sync --extra model`），且只能在 `perception/dinov2_backend.py` 内延迟导入。
 - **配置顺序**：新配置项先加 `config.py` 的 dataclass 字段（带默认值）→
   同步 `configs/default.yaml` → 再在消费方使用。未知键会被告警。
 - **线程模型**：采集/感知/主色三个工作线程 + 主线程显示（cv2 GUI 必须主线程）。
@@ -39,6 +39,9 @@ uv run cognition-pre doctor                                   # 环境/摄像头
   支配度置信度、全景验证脚本（`scripts/validate_panorama.py`）、外发接收端
   （`scripts/receiver_demo.py`，UDP/WS 双通道 10Hz 实测通过）、双流录制（--record-dir）。
   本机调试：OBS 虚拟摄像头在 camera 1（dshow），camera 0 是纯黑实体摄像头。
-- 待办：真素材人眼评估（Phase 0 判读与 Phase 2 打分权重精调依赖它）；DINOv3 gated
-  权重审批通过后按 `docs/roadmap.md` Phase 1 清单接入——`perception/dinov3_backend.py`
-  的 prefix-token 切片、层区间选择尚未用真权重验证过，改动前先跑通一次真模型。
+- 2026-11-04：全仓切换 DINOv2（DINOv3 gated 权重申请被 Meta 拒绝，全部变体 403）。
+  `--dinov2` 真权重全链路已在 OBS 虚拟摄像头 + CPU 上跑通（224² 实测 ~18fps，热图
+  判读通过）。注意：transformers 5.x 必须 `attn_implementation="eager"` 才返回注意力
+  权重（已固化在 backend，改动加载逻辑时勿丢）。
+- 待办：真素材人眼评估（Phase 0 判读与 Phase 2 打分权重精调依赖它）；518²/224² 稳定性
+  对比与 rollout 对照见 `docs/roadmap.md` Phase 1。

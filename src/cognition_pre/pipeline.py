@@ -222,6 +222,8 @@ class RealtimePipeline:
                         break
                     if key == ord("h"):
                         preview.show_heat = not preview.show_heat
+                    if key == ord("f"):
+                        preview.toggle_fullscreen()
                 elif (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
                     break
         finally:

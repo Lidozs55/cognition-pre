@@ -29,9 +29,8 @@ class PreprocessConfig:
 
 @dataclass
 class AttentionConfig:
-    backend: str = "mock"  # mock | dinov3
-    hf_repo: str = "facebook/dinov3-vits16-pretrain-lvd1689m"
-    hf_token_env: str = "HF_TOKEN"
+    backend: str = "mock"  # mock | dinov2
+    hf_repo: str = "facebook/dinov2-small"
     device: str = "cpu"  # cpu | cuda
     fps: float = 10.0  # 热图更新频率；中间帧复用最近热图
     layer_start_frac: float = 0.6  # 取中后层 CLS→patch 注意力
@@ -44,9 +43,10 @@ class AttentionConfig:
 class ColorConfig:
     hz: float = 10.0  # 主色计算频率（=数据输出频率，10fps）
     n_clusters: int = 5
-    lam: float = 0.75  # λ：w = 1 + λ·A(x)
+    lam: float = 3.0  # λ：w = 1 + λ·A(x)。焦点/氛围分布分离的主杠杆：0.75 时 w∈[1,1.75]，
+                      # 质量项碾压注意力信号导致两世界趋同；3.0 时注意区权重是背景 4 倍
     lab_weights: tuple[float, float, float] = (0.5, 1.0, 1.0)  # L 低、a/b 高
-    sample_budget: int = 8000  # 10Hz 实测调校：双实例 ~30ms/轮（20000 时 ~90ms 贴预算）
+    sample_budget: int = 12000  # 抽样像素预算：8000 时多彩场景统计不稳；12000 实测双实例 ~21ms/轮（warm-start 后）
     kmeans_batch_size: int = 2048  # 大 batch 帮助 MiniBatchKMeans 早停收敛
     kmeans_n_init: int = 2
     min_mass_frac: float = 0.02
@@ -60,7 +60,13 @@ class ColorConfig:
 
 @dataclass
 class ModulationConfig:
-    gamma: float = 0.3  # mask = γ + (1−γ)·s(x)
+    # 分段线性阈值化（ramp）：A<=lo 全黑（black_floor 残亮）、A>=hi 原始亮度、中间线性。
+    # 焦点流对 A(x) 生效；氛围流对 1−A(x) 生效——阈值独立配置。
+    focus_lo: float = 0.25
+    focus_hi: float = 0.65
+    ambient_lo: float = 0.25
+    ambient_hi: float = 0.65
+    black_floor: float = 0.0  # mask=0 时的残亮比例（0=真全黑；嫌死黑可给 0.05）
     enabled: bool = True
 
 
@@ -89,6 +95,7 @@ class DisplayConfig:
     show: bool = True
     window_width: int = 320
     show_heatmap: bool = True
+    fullscreen: bool = False  # 启动即全屏（运行中按 f 切换）；全屏时画布 letterbox 补黑边
     record_dir: str = ""  # 非空则把焦点/氛围两路调制流录制到该目录（仅展示路，永不回读）
 
 

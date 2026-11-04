@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cognition-pre"
 version = "0.1.0"
-description = "DINOv3 注意力驱动的实时双主色提取（焦点色 / 氛围色）"
+description = "DINOv2 注意力驱动的实时双主色提取（焦点色 / 氛围色）"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

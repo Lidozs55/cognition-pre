@@ -1,6 +1,9 @@
 """预览画布：裁切帧 | 焦点流 | 氛围流 / 热图叠加 + 色板与状态。
 
 cv2 窗口必须在主线程；画布文字用英文（Hershey 字体不渲染中文）。
+全屏（'f' 键切换 / display.fullscreen）：WINDOW_FULLSCREEN 会按窗口比例硬拉伸
+（本机 OpenCV 5 无 WINDOW_KEEP_RATIO），故全屏时手动等比缩放画布并黑边补齐到
+屏幕比例后再显示。
 """
 
 from __future__ import annotations
@@ -12,14 +15,54 @@ from ..config import DisplayConfig
 from ..output.results import FrameResult
 from ..utils.fps import FpsMeter
 
-_WINDOW = "cognition-pre  [q]quit  [h]heatmap"
+_WINDOW = "cognition-pre  [q]quit  [h]heatmap  [f]fullscreen"
 
 
 class PreviewWindows:
     def __init__(self, cfg: DisplayConfig) -> None:
         self.cfg = cfg
         self.show_heat = cfg.show_heatmap
-        cv2.namedWindow(_WINDOW, cv2.WINDOW_AUTOSIZE)
+        self.fullscreen = bool(cfg.fullscreen)
+        self._screen: tuple[int, int] | None = None  # 屏幕分辨率，全屏时惰性获取
+        cv2.namedWindow(_WINDOW, cv2.WINDOW_NORMAL)  # NORMAL：窗口模式可自由拖拽缩放
+        w = cfg.window_width * 2
+        cv2.resizeWindow(_WINDOW, w, w)
+        if self.fullscreen:
+            cv2.setWindowProperty(_WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+    def toggle_fullscreen(self) -> None:
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen:
+            cv2.setWindowProperty(_WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        else:
+            cv2.setWindowProperty(_WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+            w = self.cfg.window_width * 2
+            cv2.resizeWindow(_WINDOW, w, w)
+
+    def _screen_size(self) -> tuple[int, int]:
+        """主屏分辨率（Windows 取 user32；其他平台退 1920x1080 假设）。"""
+        if self._screen is None:
+            try:
+                import ctypes
+
+                u = ctypes.windll.user32
+                self._screen = (int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1)))
+            except Exception:
+                self._screen = (1920, 1080)
+        return self._screen
+
+    def _fit_screen(self, canvas: np.ndarray) -> np.ndarray:
+        """等比缩放画布到屏幕内并黑边补齐到屏幕比例（对冲全屏硬拉伸）。"""
+        sw, sh = self._screen_size()
+        ch, cw = canvas.shape[:2]
+        scale = min(sw / cw, sh / ch)
+        nw, nh = max(1, round(cw * scale)), max(1, round(ch * scale))
+        interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
+        fitted = cv2.resize(canvas, (nw, nh), interpolation=interp)
+        out = np.zeros((sh, sw, 3), np.uint8)
+        y, x = (sh - nh) // 2, (sw - nw) // 2
+        out[y : y + nh, x : x + nw] = fitted
+        return out
 
     def draw(
         self,
@@ -58,7 +101,7 @@ class PreviewWindows:
         )
 
         canvas = np.vstack([row1, np.hstack([heat, bar])])
-        cv2.imshow(_WINDOW, canvas)
+        cv2.imshow(_WINDOW, self._fit_screen(canvas) if self.fullscreen else canvas)
         return cv2.waitKey(1) & 0xFF
 
     @staticmethod

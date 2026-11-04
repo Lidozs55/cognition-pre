@@ -107,3 +107,33 @@ def test_dominance_multi_cluster_share():
     total = sum(c.score for c in res.candidates)
     assert 0.0 < res.dominance < 1.0
     assert abs(res.dominance - res.best.score / total) < 1e-6
+
+
+def test_warm_start_reuses_centers_and_stays_correct():
+    """warm-start（防闪 A）：第二轮复用上轮簇心，正确性不变。"""
+    cfg = make_cfg(overrides={"color.seed": 0})
+    img, s = _split_scene()
+    cm = WeightedDominantColor(cfg.color, invert=False, name="focus")
+    first = cm.compute(img, s)
+    assert first.best is not None
+    assert cm._prev_centers is not None  # 已存簇心
+    second = cm.compute(img, s)
+    assert second.best is not None
+    assert second.best.rgb[0] > 150  # 红仍胜出
+
+
+def test_warm_start_survives_scene_change():
+    """warm-start 不能锁死旧簇：换素材后赢家应跟新内容走。"""
+    cfg = make_cfg(overrides={"color.seed": 0})
+    h = w = 160
+    img_red = np.zeros((h, w, 3), np.uint8)
+    img_red[:] = (200, 30, 30)
+    s = np.ones((h, w), np.float32)
+    img_blue = np.zeros((h, w, 3), np.uint8)
+    img_blue[:] = (30, 60, 200)
+
+    cm = WeightedDominantColor(cfg.color, invert=False, name="focus")
+    assert cm.compute(img_red, s).best.rgb[0] > 150
+    res = cm.compute(img_blue, s)
+    assert res.best is not None
+    assert res.best.rgb[2] > 150  # 全画面换蓝后旧簇心不得绑架结果

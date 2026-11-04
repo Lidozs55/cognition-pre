@@ -1,6 +1,6 @@
 # cognition-pre
 
-> 用一个零标注的自监督视觉模型（DINOv3）实时算出"你在看哪"，据此把画面拆成两个世界——
+> 用一个零标注的自监督视觉模型（DINOv2）实时算出"你在看哪"，据此把画面拆成两个世界——
 > **焦点区**和**氛围区**——各自实时提取一个主色，同时输出两路"看得见注意力"的调制视频。
 
 ## 设计铁律
@@ -18,13 +18,13 @@ OBS 虚拟摄像头（任意片源，30 fps）
   缩放到模型尺寸（518² 或 224²）
         │
         ▼
-  DINOv3-S 推理（10 fps）──► 注意力热图 A(x)∈[0,1]（上采样回裁切坐标）
+  DINOv2-S 推理（10 fps）──► 注意力热图 A(x)∈[0,1]（上采样回裁切坐标）
         │
         ├──────────────────────────────┐
         ▼                              ▼
 【主色计算，10 Hz】               【双流调制，全帧率】
-  焦点色: 原图 × w=1+λA             焦点流: 低注意力区压暗
-  氛围色: 原图 × w=1+λ(1−A)         氛围流: 高注意力区压暗
+  焦点色: 原图 × w=1+λA             焦点流: 低注意力全黑、高注意力原亮度
+  氛围色: 原图 × w=1+λ(1−A)         氛围流: 反向（对 1−A 同样阈值化）
         │                              │
         ▼                              ▼
   加权聚类 + 打分              视频输出（纯展示，
@@ -41,14 +41,14 @@ OBS 虚拟摄像头（任意片源，30 fps）
 uv.lock                     # uv 锁文件（uv sync 按此复现环境）
 configs/default.yaml        # 默认配置（与 config.py 的 dataclass 一一对应）
 docs/                       # 设计文档 / 阶段计划
-scripts/                    # 辅助脚本（生成演示视频 / 全景验证 / 外发接收端）
+scripts/                    # 辅助脚本（生成演示视频 / 全景验证 / 后端热图校验 / 外发接收端）
 src/cognition_pre/
   config.py                 # 配置 dataclass（单一事实源）
   pipeline.py               # 实时管线编排（采集/感知/主色三线程 + 主线程显示）
   buffers.py                # "最新者赢"单槽缓冲
   preprocess.py             # M2 中心裁切 + 模型缩放
   input/frame_source.py     # M1 摄像头/文件/合成源
-  perception/               # M3 注意力后端（mock | dinov3）+ 热图后处理
+  perception/               # M3 注意力后端（mock | dinov2）+ 热图后处理
   color/dominant.py         # M4 加权 Mini-Batch K-Means + 打分器（对比度/迟滞）
   display/modulation.py     # M5 双流亮度调制 + 双流录制
   stability.py              # M6 色值 EMA + 大跳变重置
@@ -93,19 +93,21 @@ uv run cognition-pre run --mock --source 1 --backend dshow   # 索引按 doctor 
 
 Windows 打开虚拟摄像头建议 `--backend dshow`（msmf 偶发打不开/黑帧）。
 
-### 4) 真·DINOv3（Phase 1）
+### 4) 真·DINOv2（Phase 1）
 
-DINOv3 权重是 gated 仓库，需要：
-
-1. 上 [HuggingFace 模型页](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m)
-   登录并接受许可；
-2. `uvx --from "huggingface_hub[cli]" hf auth login`（旧命令 `huggingface-cli` 已改名 `hf`），或设置环境变量 `HF_TOKEN`；
-3. 安装模型依赖并运行：
+DINOv2 权重是公开仓库（无需 token / 许可审批）：
 
 ```bash
-uv sync --extra model   # CPU 版 torch；CUDA 版建议 uv pip install torch --index-url https://download.pytorch.org/whl/<cu版本>
-uv run cognition-pre run --dinov3 --source 1 --device cuda
-# 显存富余可上 518：--size 518（注意 docs/roadmap.md 里 518² 的显存说明）
+uv sync --extra model   # CPU 版 torch；有 NVIDIA 卡时可换 CUDA 版（按 pytorch.org 官方索引装）
+uv run cognition-pre run --dinov2 --source 1 --device cpu
+# 显存富余可上 518：--size 518（DINOv2 为 patch 14，518/14=37 整除）
+# 展示机（GPU）热图 A/B：--repo facebook/dinov2-base（ViT-B/14，86M；本机 CPU 跑不动）
+```
+
+接入/更换注意力模型后，先跑单帧热图校验并人眼判读（落盘"裁切帧 | 热图叠加"并排图）：
+
+```bash
+uv run python scripts/check_backend.py --source 1 --capture-backend dshow
 ```
 
 ### 输出与外发
@@ -148,10 +150,13 @@ CLI 标志可临时覆盖。常用项：
 | `attention.fps` | 10 | 热图更新频率，中间帧复用最近热图 |
 | `attention.top_clip_pct` | 0.05 | 归一后截掉前 5% 极值，防孤斑通吃 |
 | `color.hz` | 10 | 主色计算频率（=数据输出频率） |
-| `color.lam` | 0.75 | 注意力权重强度 λ：w = 1 + λ·A(x) |
+| `color.lam` | 3.0 | 注意力权重强度 λ：w = 1 + λ·A(x)；焦点/氛围趋同就调大 |
+| `color.sample_budget` | 12000 | 单实例聚类抽样像素预算（实测双实例 ~21ms/轮） |
 | `color.hysteresis_margin` | 0.15 | 簇切换迟滞：挑战簇须有 (1+margin) 分数优势才夺主 |
 | `color.lab_weights` | [0.5,1,1] | Lab 特征权重：L 低、a/b 高 |
-| `modulation.gamma` | 0.3 | 调制下限 γ：mask = γ + (1−γ)·s(x) |
+| `modulation.focus_lo / focus_hi` | 0.25 / 0.65 | 焦点流阈值：A≤lo 全黑、A≥hi 原亮度，中间线性（ambient_* 同理对 1−A） |
+| `modulation.black_floor` | 0.0 | mask=0 残亮比例（0=真全黑） |
+| `display.fullscreen` | false | 启动即全屏；运行中按 `f` 切换，画布 letterbox 补黑边 |
 | `stability.ema_alpha` | 0.05 | 色值 EMA（按 10Hz 调校，τ≈2.0s；改 color.hz 按 α = 1 − exp(−1/(hz·τ)) 重调） |
 | `stability.jump_reset_dist` | 60 | RGB 距离超此值直接置入（防换景爬色）；0 关闭 |
 

@@ -3,7 +3,7 @@
 常用：
   cognition-pre doctor                                     # 环境自检（依赖/摄像头探测）
   cognition-pre run --mock --no-display --max-seconds 3    # 无权重冒烟
-  cognition-pre run --source 0 --dinov3 --device cuda      # OBS 虚拟摄像头 + 真模型
+  cognition-pre run --source 0 --dinov2 --device cuda      # OBS 虚拟摄像头 + 真模型
   cognition-pre run --source data/demo.avi --mock          # 文件源联调
 """
 
@@ -26,20 +26,23 @@ _DEFAULT_CONFIG_CANDIDATES = ("configs/default.yaml",)
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="cognition-pre",
-        description="DINOv3 注意力驱动的实时双主色提取（焦点色/氛围色）",
+        description="DINOv2 注意力驱动的实时双主色提取（焦点色/氛围色）",
         epilog="用法: cognition-pre run [flags...] | cognition-pre doctor",
     )
     p.add_argument("--config", help="YAML 配置路径（缺省依次找 configs/default.yaml、内置默认）")
     p.add_argument("--source", help='摄像头索引 / 视频文件路径 / "test:split" 合成源')
     p.add_argument("--backend", help="采集后端 auto | dshow | msmf | ffmpeg（Windows 打 OBS 虚拟摄像头建议 dshow）")
     p.add_argument("--mock", action="store_true", help="用 mock 注意力后端（无需权重）")
-    p.add_argument("--dinov3", action="store_true", help="用 DINOv3 真模型（需 uv sync --extra model + HF_TOKEN）")
+    p.add_argument("--dinov2", action="store_true", help="用 DINOv2 真模型（需 uv sync --extra model；权重公开无需 token）")
     p.add_argument("--size", type=int, choices=(224, 518), help="模型输入边长")
     p.add_argument("--device", help="cpu | cuda")
     p.add_argument("--attention-fps", type=float, help="热图更新频率（默认 10）")
     p.add_argument("--color-hz", type=float, help="主色计算频率（默认 10）")
-    p.add_argument("--lambda", dest="lam", type=float, help="注意力权重强度 λ（默认 0.75）")
-    p.add_argument("--gamma", type=float, help="调制下限 γ（默认 0.3）")
+    p.add_argument("--lambda", dest="lam", type=float, help="注意力权重强度 λ（默认 3.0；趋同就调大）")
+    p.add_argument("--mod-lo", type=float, help="调制下阈值：注意力<=lo 全黑（双流共用，默认 0.25）")
+    p.add_argument("--mod-hi", type=float, help="调制上阈值：注意力>=hi 原始亮度（双流共用，默认 0.65）")
+    p.add_argument("--fullscreen", action="store_true", help="启动即全屏（运行中按 f 切换）")
+    p.add_argument("--repo", help="HF 模型仓覆盖，例 facebook/dinov2-base（展示机热图 A/B 用）")
     p.add_argument("--no-display", action="store_true", help="无窗口运行（自检/服务器）")
     p.add_argument("--record-dir", help="录制焦点/氛围两路调制流到该目录（仅展示路，需有显示模式）")
     p.add_argument("--no-loop", action="store_true", help="文件源播完不循环")
@@ -72,8 +75,8 @@ def _apply_overrides(cfg: AppConfig, args: argparse.Namespace) -> None:
         set_or_die("capture.backend", args.backend)
     if args.mock:
         set_or_die("attention.backend", "mock")
-    if args.dinov3:
-        set_or_die("attention.backend", "dinov3")
+    if args.dinov2:
+        set_or_die("attention.backend", "dinov2")
     if args.size is not None:
         set_or_die("preprocess.model_input_size", args.size)
     if args.device is not None:
@@ -84,8 +87,16 @@ def _apply_overrides(cfg: AppConfig, args: argparse.Namespace) -> None:
         set_or_die("color.hz", args.color_hz)
     if args.lam is not None:
         set_or_die("color.lam", args.lam)
-    if args.gamma is not None:
-        set_or_die("modulation.gamma", args.gamma)
+    if args.mod_lo is not None:
+        set_or_die("modulation.focus_lo", args.mod_lo)
+        set_or_die("modulation.ambient_lo", args.mod_lo)
+    if args.mod_hi is not None:
+        set_or_die("modulation.focus_hi", args.mod_hi)
+        set_or_die("modulation.ambient_hi", args.mod_hi)
+    if args.fullscreen:
+        set_or_die("display.fullscreen", True)
+    if args.repo is not None:
+        set_or_die("attention.hf_repo", args.repo)
     if args.no_display:
         set_or_die("display.show", False)
     if args.record_dir is not None:
