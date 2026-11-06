@@ -4,6 +4,69 @@ import threading
 import numpy as np
 
 from cognition_pre.pipeline import RealtimePipeline
+from cognition_pre.perception import MockAttentionBackend
+from cognition_pre.perception.base import AttentionBackend
+
+
+def test_infer_world_default_is_attention():
+    """缺省 infer_world 返回 (注意力, 注意力) 同对象——mock/NCut 关闭时世界=注意力，
+    且管线上采样只做一次依赖该恒等（pipeline._perception_loop 的 is 判断）。"""
+    b = MockAttentionBackend(animated=False)
+    rgb = np.full((64, 64, 3), 127, np.uint8)
+    a, w = b.infer_world(rgb)
+    assert a is w
+    np.testing.assert_array_equal(a, b.infer(rgb))
+
+
+def test_color_uses_world_map_not_attention(tmp_path, cfg_factory, monkeypatch):
+    """NCut 集成路由回归（2026-11-06）：主色计算必须吃世界图而非注意力图——
+    注意力说主体在左（红半），世界图说主体在右（蓝半）；若路由错回注意力，
+    焦点色会翻成红。展示路不在测试范围（无窗口），此处只锁计算路。"""
+    from cognition_pre import pipeline as pl
+
+    class DualBackend(AttentionBackend):
+        name = "dual-fake"
+
+        def infer(self, rgb_u8):
+            g = np.zeros((4, 4), np.float32)
+            g[:, :2] = 1.0  # 注意力：左半为"主体"
+            return g
+
+        def infer_world(self, rgb_u8):
+            w = np.zeros((4, 4), np.float32)
+            w[:, 2:] = 1.0  # 世界图：右半为"主体"
+            return self.infer(rgb_u8), w
+
+    class StaticSource:
+        is_file = True
+
+        def __init__(self, frame):
+            self.frame = frame
+
+        def open(self):
+            return True
+
+        def read(self):
+            return self.frame.copy()
+
+        def rewind(self):
+            return True
+
+        def close(self) -> None: ...
+
+    frame = np.zeros((128, 128, 3), np.uint8)
+    frame[:, :64] = (0, 0, 255)  # 左半红（BGR）
+    frame[:, 64:] = (255, 0, 0)  # 右半蓝（BGR）
+    monkeypatch.setattr(pl, "open_source", lambda _cfg: StaticSource(frame))
+    monkeypatch.setattr(pl, "build_backend", lambda _cfg: DualBackend())
+
+    cfg = cfg_factory(tmp_path)
+    pipe = RealtimePipeline(cfg)
+    pipe.run_blocking()
+    assert pipe.latest_result is not None
+    d = pipe.latest_result.to_dict()
+    assert d["focus_rgb"][2] > 200 and d["focus_rgb"][0] < 50  # 焦点=蓝（世界图右半）
+    assert d["ambient_rgb"][0] > 200 and d["ambient_rgb"][2] < 50  # 氛围=红（左半）
 
 
 def test_mock_pipeline_end_to_end(tmp_path, cfg_factory):

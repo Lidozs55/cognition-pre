@@ -26,5 +26,6 @@ def build_backend(cfg) -> AttentionBackend:
             device=cfg.device,
             layer_start_frac=cfg.layer_start_frac,
             layer_end_drop=cfg.layer_end_drop,
+            ncut_color=cfg.ncut_color,
         )
     raise ValueError(f"未知注意力后端: {cfg.backend}")

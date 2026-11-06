@@ -18,13 +18,13 @@ OBS 虚拟摄像头（任意片源，30 fps）
   缩放到模型尺寸（518² 或 224²）
         │
         ▼
-  DINOv2-S 推理（10 fps）──► 注意力热图 A(x)∈[0,1]（上采样回裁切坐标）
-        │
+  DINOv2-S 推理（10 fps，一次前向双图）──► 注意力 A(x)∈[0,1]（上采样回裁切坐标）
+        │                                  世界图 S(x)=NCut 谱分割（仅主色路）
         ├──────────────────────────────┐
         ▼                              ▼
 【主色计算，10 Hz】               【双流调制，全帧率】
-  焦点色: 原图 × w=ramp(A)           焦点流: 低注意力全黑、高注意力原亮度
-  氛围色: 原图 × w=ramp(1−A)         氛围流: 反向（对 1−A 同样阈值化）
+  焦点色: 原图 × w=ramp(S)           焦点流: 低注意力全黑、高注意力原亮度（A）
+  氛围色: 原图 × w=ramp(1−S)         氛围流: 反向（对 1−A 同样阈值化）
         │                              │
         ▼                              ▼
   加权聚类 + 打分              视频输出（纯展示，
@@ -48,7 +48,7 @@ src/cognition_pre/
   buffers.py                # "最新者赢"单槽缓冲
   preprocess.py             # M2 中心裁切 + 模型缩放
   input/frame_source.py     # M1 摄像头/文件/合成源
-  perception/               # M3 注意力后端（mock | dinov2）+ 热图后处理
+  perception/               # M3 注意力后端（mock | dinov2）+ 热图后处理 + NCut 世界图
   color/dominant.py         # M4 加权 Mini-Batch K-Means + 打分器（对比度/迟滞）
   display/modulation.py     # M5 双流亮度调制 + 双流录制
   stability.py              # M6 色值 EMA + 大跳变重置
@@ -59,6 +59,9 @@ tests/                      # pytest（全走 mock + 合成源，无摄像头无
 ```
 
 ## 快速开始
+
+> 极简启动指南（安装含 pip 兜底 + 基础启动 + `--repo` 大模型 / `--size` 分辨率）见
+> [QUICKSTART.md](QUICKSTART.md)。
 
 包管理用 [uv](https://docs.astral.sh/uv/)（不用 pip）：
 
@@ -149,6 +152,7 @@ CLI 标志可临时覆盖。常用项：
 | --- | --- | --- |
 | `attention.fps` | 10 | 热图更新频率，中间帧复用最近热图 |
 | `attention.top_clip_pct` | 0.05 | 归一后截掉前 5% 极值，防孤斑通吃 |
+| `attention.ncut_color` | true | 主色世界掩膜用 NCut 谱分割（极性=度数/紧凑度级联，一次前向双图）；展示/调制路仍注意力热图；`--no-ncut-color` 回退注意力 ramp |
 | `color.hz` | 10 | 主色计算频率（=数据输出频率） |
 | `color.weight_lo / weight_hi` | 0.2 / 0.8 | 主色注意力加权 ramp（与调制同形）：A<lo 权重记 0（从该世界剔除）、A≥hi 记 1、中间线性；焦点/氛围趋同→调大 lo |
 | `color.n_clusters / merge_dist` | 5 / 0.10 | 聚类簇数上限 / 近邻簇心合并阈值：同色系深浅碎片并为一族（动态类数——同色系场景自动 2-3 族，真多彩不丢分辨率；0 关闭） |

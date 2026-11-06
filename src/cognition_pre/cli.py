@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-clusters", type=int, help="聚类簇数上限（近邻簇心会按 merge_dist 合并，默认 5）")
     p.add_argument("--merge-dist", type=float, help="近邻簇心合并阈值：同色系深浅碎片并为一族（动态类数，默认 0.10；0 关闭）")
     p.add_argument("--no-surround-contrast", action="store_true", help="关闭保护色惩罚（焦点对比度基准退回全帧均色，A/B 对照用）")
+    p.add_argument("--no-ncut-color", action="store_true", help="主色世界掩膜退回注意力 ramp（默认 NCut 谱分割；A/B 对照与回退用）")
     p.add_argument("--mod-lo", type=float, help="调制下阈值：注意力<=lo 全黑（双流共用，默认 0.25）")
     p.add_argument("--mod-hi", type=float, help="调制上阈值：注意力>=hi 原始亮度（双流共用，默认 0.65）")
     p.add_argument("--fullscreen", action="store_true", help="启动即全屏（运行中按 f 切换）")
@@ -99,6 +100,8 @@ def _apply_overrides(cfg: AppConfig, args: argparse.Namespace) -> None:
         set_or_die("color.merge_dist", args.merge_dist)
     if args.no_surround_contrast:
         set_or_die("color.surround_contrast", False)
+    if args.no_ncut_color:
+        set_or_die("attention.ncut_color", False)
     if args.mod_lo is not None:
         set_or_die("modulation.focus_lo", args.mod_lo)
         set_or_die("modulation.ambient_lo", args.mod_lo)

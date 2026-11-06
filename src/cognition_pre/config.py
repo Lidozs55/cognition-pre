@@ -43,6 +43,9 @@ class AttentionConfig:
     norm_floor_pct: float = 0.0  # 可选背景平台抑制：该分位的值归零。默认关——无直接论文依据（LOST 谱系
                                  # 的背景阈值是符号/Otsu 类而非分位归零），且隐含"主体 <50% 画面"假设，
                                  # 特写会误伤主体。背景泄漏困扰时 0.5 起试；0 = min-max 归一
+    ncut_color: bool = True  # 主色世界掩膜用 NCut 谱分割（perception/ncut.py，极性=度数/紧凑度级联）：2026-11-06
+    # 真素材判读注意力散斑/掩膜超纳入（占画面 54%），谱分割 4/5 最佳。展示/调制路不变仍注意力；
+    # mock 无特征恒等注意力；false 退回注意力 ramp（--no-ncut-color，A/B 与回退）
 
 
 @dataclass

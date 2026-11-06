@@ -2,9 +2,11 @@
 
 线程模型（多频率解耦，全部走"最新者赢"单槽）：
   capture    ：源读帧 → 中心方形裁切 → crop_slot
-  perception ：按 attention.fps 取最新裁切帧 → 后端热图 → 后处理 → 上采样 → attn_slot
-  color      ：按 color.hz 取最新帧+热图 → 焦点/氛围双实例加权聚类 → EMA → sinks
-  main       ：显示路（cv2 窗口必须主线程）；无显示时仅等待停止信号
+  perception ：按 attention.fps 取最新裁切帧 → 后端一次前向出双图（注意力 + 主色
+               世界图，NCut）→ 后处理 → 上采样 → attn_slot
+  color      ：按 color.hz 取最新帧+世界图 → 焦点/氛围双实例加权聚类 → EMA → sinks
+  main       ：显示路（cv2 窗口必须主线程）——热图叠加与调制只用注意力图，
+               不展示世界图；无显示时仅等待停止信号
 
 展示路（调制视频）只在 main 线程存在，与计算路零耦合。
 """
@@ -51,7 +53,7 @@ class RealtimePipeline:
         self.sinks = sinks if sinks is not None else create_sinks(cfg.output)
 
         self.crop_slot = LatestSlot()
-        self.attn_slot = LatestSlot()  # 元素: (frame_seq, attn_at_crop_res)
+        self.attn_slot = LatestSlot()  # 元素: (frame_seq, attn_at_crop_res, world_at_crop_res)
         self.latest_result: FrameResult | None = None
 
         self.stop_evt = threading.Event()
@@ -149,9 +151,11 @@ class RealtimePipeline:
                     continue
                 last_seq = seq
                 model_rgb = self.pre.to_model_rgb(crop)
-                raw = self.backend.infer(model_rgb)
-                attn = upsample(self.post(raw), crop.shape[:2])
-                self.attn_slot.push((seq, attn))
+                raw_attn, raw_world = self.backend.infer_world(model_rgb)
+                attn = upsample(self.post(raw_attn), crop.shape[:2])
+                # 世界图缺省与注意力同对象（mock/NCut 关闭），上采样只做一次
+                world = attn if raw_world is raw_attn else upsample(self.post(raw_world), crop.shape[:2])
+                self.attn_slot.push((seq, attn, world))
                 self.fps["attention"].tick()
         except Exception:
             log.exception("perception 线程异常")
@@ -170,13 +174,14 @@ class RealtimePipeline:
                 _, apair = self.attn_slot.get()
                 if crop is None or apair is None:
                     continue
-                attn = apair[1]
+                # 主色世界图（默认 NCut 谱分割，attention.ncut_color=false 时=注意力）
+                world = apair[2]
                 rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
                 fres = self.focus_cm.compute(
-                    rgb, attn,
+                    rgb, world,
                     surround_ref=ambient_ref if self.cfg.color.surround_contrast else None,
                 )
-                ares = self.ambient_cm.compute(rgb, attn)
+                ares = self.ambient_cm.compute(rgb, world)
                 if ares.best is not None:
                     ambient_ref = ares.best.lab01
                 if fres.best is None or ares.best is None:

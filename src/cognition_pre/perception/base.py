@@ -16,6 +16,13 @@ class AttentionBackend(ABC):
     @abstractmethod
     def infer(self, rgb_u8: np.ndarray) -> np.ndarray: ...
 
+    def infer_world(self, rgb_u8: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """一次前向出 (注意力图, 主色世界图)。缺省世界=注意力（mock 无特征 / NCut
+        关闭，返回同对象——管线上采样只做一次的前提）。展示/调制取注意力，主色
+        世界掩膜取后者（design.md M3/M4）。"""
+        a = self.infer(rgb_u8)
+        return a, a
+
 
 class HeatmapPostprocessor:
     """热图后处理：轻度平滑（可选）→ 截掉前 top_pct 极值 → 背景平台抑制归一到 [0,1]。

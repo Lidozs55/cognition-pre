@@ -1,17 +1,25 @@
 """热图质量对照：同一帧并排比较 DINOv2 saliency 信号与输入分辨率。
 
-行（信号）：
+行（信号/诊断）：
   - last-layer(current) ：末层 CLS→patch 注意力（现役，官方 DINO 配方）
+  - last-headmax       ：末层多头取最大（对照现役多头平均）——散斑归因：平均是否把
+    "物体头"摊薄进"结构头"（2026-11-06 观感反馈"散、无聚集感"）
+  - last-k3smooth      ：同现役信号 + 定核 3x3 平滑（224² 现役核=1 实际不模糊）——
+    聚集感对照：轻度并斑能否替代换模型
+  - focusmask / focusmask-closed ：焦世界二值掩膜（A > color.weight_lo，主色路真实
+    看到的世界）与闭运算（核≈1 patch）填洞预览——直读"主体内低注意力空洞"
+    （观感反馈假说 3：洞会把主体内部泄漏给氛围世界）
   - midlate / midlate+last ：层选择备选（中后层平均，层集合固定 [int(n*0.6), n-1)，不随配置变）
   - ncut ：TokenCut-lite（CVPR 2022 Wang et al.）——patch 特征余弦亲和 → 归一化割
     第二特征向量。真素材判读未通过（稳定比主体多纳入背景，末层@518 胜出），不集成
     backend；行保留供将来 full TokenCut（含 CRF 精修）复查
 已判不可行（真素材人眼判读，不再保留实现）：PCA 前景图、feat-norm 特征范数。
-列：--sizes 分辨率；全部过同一后处理（平滑 + top-clip + floor 归一）与同一叠加方式。
+列：--sizes 分辨率；热图行过同一后处理（平滑 + top-clip + floor 归一）与同一叠加方式。
 
 用法：
   uv run python scripts/compare_heatmaps.py --source 1 --capture-backend dshow
   uv run python scripts/compare_heatmaps.py --source data/demo.avi --sizes 224,518
+  uv run python scripts/compare_heatmaps.py --source "data/xxx.png"   # 静态图（真实场景判读）
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ from check_backend import grab_frame
 
 from cognition_pre.config import AppConfig
 from cognition_pre.perception import HeatmapPostprocessor, upsample
+from cognition_pre.perception.ncut import ncut_map
 from cognition_pre.preprocess import Preprocessor
 
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -42,24 +51,9 @@ def load_model(repo: str, device: str):
     return model
 
 
-def ncut_saliency(patch_feat: torch.Tensor, side: int) -> np.ndarray:
-    """TokenCut-lite：归一化割第二特征向量（去 CRF 精修/多尺度，保留核心）。
-
-    松弛 NCut 的第二小特征向量 = 归一化亲和矩阵 D^-1/2 W D^-1/2 的第二大特征向量。
-    极性按中心先验对齐（显著主体通常更靠中心，saliency 文献标准；只定符号不影响模式）。
-    """
-    f = torch.nn.functional.normalize(patch_feat, dim=-1)
-    w = f @ f.T
-    w.fill_diagonal_(0)
-    d_inv_sqrt = torch.rsqrt(torch.clamp(w.sum(dim=1), min=1e-8))
-    norm_adj = d_inv_sqrt[:, None] * w * d_inv_sqrt[None, :]
-    vals, vecs = torch.linalg.eigh(norm_adj)  # 升序；[-1] 是平凡特征向量
-    sal = vecs[:, -2].cpu().numpy().astype(np.float32)
-    gh, gw = np.meshgrid(np.linspace(-1.0, 1.0, side), np.linspace(-1.0, 1.0, side))
-    center_w = -(gh * gh + gw * gw).ravel()
-    if float(np.corrcoef(sal, center_w)[0, 1]) < 0.0:
-        sal = -sal
-    return sal.reshape(side, side)
+def ncut_saliency(patch_feat, side: int) -> np.ndarray:
+    """薄封装：与主色路后端共用 perception/ncut.py 的单一实现（含极性策略）。"""
+    return ncut_map(patch_feat, side)
 
 
 @torch.no_grad()
@@ -93,10 +87,19 @@ def forward_signals(model, rgb_u8: np.ndarray, device: str) -> dict[str, np.ndar
     if side * side != patch_feat.shape[0]:
         raise RuntimeError(f"patch 数非平方数: {patch_feat.shape[0]}")
 
+    last = cls_attn([n_layers - 1]).astype(np.float32)
     signals: dict[str, np.ndarray] = {
         "midlate": cls_attn(midlate).astype(np.float32).reshape(side, side),
         "midlate+last": cls_attn(midlate + [n_layers - 1]).astype(np.float32).reshape(side, side),
-        "last-layer(current)": cls_attn([n_layers - 1]).astype(np.float32).reshape(side, side),
+        "last-layer(current)": last.reshape(side, side),
+        # 多头聚合对照：max 强调"任一头强烈注视"的 patch，mean 会被平坦结构头稀释
+        "last-headmax": attns[n_layers - 1][0, :, 0, prefix:]
+        .max(dim=0)
+        .values.cpu()
+        .numpy()
+        .astype(np.float32)
+        .reshape(side, side),
+        # 极性策略（度数/紧凑度级联）内聚在 perception/ncut.py 单一实现里
         "ncut": ncut_saliency(patch_feat, side),
     }
     return signals
@@ -105,6 +108,39 @@ def forward_signals(model, rgb_u8: np.ndarray, device: str) -> dict[str, np.ndar
 def overlay(crop: np.ndarray, attn01: np.ndarray) -> np.ndarray:
     heat = cv2.applyColorMap((np.clip(attn01, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_JET)
     return cv2.addWeighted(crop, 0.55, heat, 0.45, 0)
+
+
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
+
+
+def load_source_frame(source: str, cap_backend: str) -> np.ndarray:
+    """静态图直接读（真实场景判读素材）；视频/摄像头走 grab_frame。
+    Windows 中文路径 imread 读不了，走 np.fromfile + imdecode。"""
+    p = Path(source)
+    if p.suffix.lower() in _IMAGE_EXTS and p.is_file():
+        img = cv2.imdecode(np.fromfile(str(p), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise SystemExit(f"图片读取失败: {source!r}")
+        return img
+    return grab_frame(source, cap_backend)
+
+
+def render_cell(mode: str, raw: np.ndarray, crop: np.ndarray, cfg, post: HeatmapPostprocessor) -> np.ndarray:
+    """按行模式出图。post=现役后处理热图；k3=定核 3x3 平滑对照（frac=3/side 精确到 3）；
+    mask / mask-closed=焦世界二值掩膜（A>weight_lo，与 dominant.py 同一比较），
+    closed 版用闭运算（核≈1 patch）填洞——主体空洞直读与填洞代价预览。"""
+    if mode == "k3":
+        proc = HeatmapPostprocessor(cfg.attention.top_clip_pct, 3.0 / raw.shape[0], cfg.attention.norm_floor_pct)
+        return overlay(crop, upsample(proc(raw), crop.shape[:2]))
+    a01 = upsample(post(raw), crop.shape[:2])
+    if mode in ("mask", "mask-closed"):
+        m = (a01 > cfg.color.weight_lo).astype(np.uint8)
+        if mode == "mask-closed":
+            p = max(1, round(crop.shape[0] / raw.shape[0]))  # 一个 patch 在裁切帧里的边长
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * p + 1, 2 * p + 1))
+            m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)
+        return overlay(crop, m.astype(np.float32))
+    return overlay(crop, a01)
 
 
 def label(img: np.ndarray, text: str) -> np.ndarray:
@@ -125,7 +161,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = AppConfig()
-    frame = grab_frame(args.source, args.capture_backend)
+    frame = load_source_frame(args.source, args.capture_backend)
     pre = Preprocessor(cfg.preprocess)
     crop, _ = pre.process(frame)
 
@@ -138,7 +174,18 @@ def main() -> int:
 
     post = HeatmapPostprocessor(cfg.attention.top_clip_pct, cfg.attention.smooth_frac, cfg.attention.norm_floor_pct)
     sizes = [int(s) for s in args.sizes.split(",")]
-    row_names = ["last-layer(current)", "midlate", "midlate+last", "ncut"]
+    # 行定义：(行名, 信号, 出图模式)——诊断组针对 2026-11-06 观感反馈三假说
+    rows_def: list[tuple[str, str, str]] = [
+        ("last-layer(current)", "last-layer(current)", "post"),
+        ("last-headmax", "last-headmax", "post"),
+        ("last-k3smooth", "last-layer(current)", "k3"),
+        ("focusmask", "last-layer(current)", "mask"),
+        ("focusmask-closed", "last-layer(current)", "mask-closed"),
+        ("midlate", "midlate", "post"),
+        ("midlate+last", "midlate+last", "post"),
+        ("ncut", "ncut", "post"),
+    ]
+    row_names = [r[0] for r in rows_def]
 
     grid: dict[str, dict[int, np.ndarray]] = {name: {} for name in row_names}
     for size in sizes:
@@ -147,8 +194,8 @@ def main() -> int:
         signals = forward_signals(model, rgb, args.device)
         dt = (time.perf_counter() - t0) * 1000
         print(f"size={size}: 单帧 {dt:.0f} ms（含 output_attentions + ncut）")
-        for name, raw in signals.items():
-            grid[name][size] = overlay(crop, upsample(post(raw), crop.shape[:2]))
+        for label_name, sig, mode in rows_def:
+            grid[label_name][size] = render_cell(mode, signals[sig], crop, cfg, post)
 
     # 网格：每行 = 原图 | 各分辨率叠加（自带标签，无表头行，列数天然对齐）
     cell = crop.shape[0]

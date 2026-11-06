@@ -53,5 +53,10 @@ uv run cognition-pre doctor                                   # 环境/摄像头
   `merge_dist`）+ 保护色惩罚（焦点对比度基准 = 上一帧氛围主色，center-surround
   对齐，`surround_contrast`）、抽样预算自适应（全分辨率掩膜 + 本世界密度自适应，
   小主体不再饥饿）。设计取向：换基准、不堆项。
+- 2026-11-06：主色世界掩膜集成 NCut 谱分割（`attention.ncut_color` 默认开；一次前向
+  双图：注意力→展示/调制，NCut 世界图→仅主色路；极性=度数/紧凑度级联——中心先验与
+  注意力锚先后被真素材反例否决，见 perception/ncut.py 头注）。真素材判读史与遗留
+  （动态素材时域稳定性待验证）见 roadmap Phase 1。诊断仪：`compare_heatmaps.py`
+  （信号/掩膜/极性对照）、`heatmap_stability.py`（掩膜帧间 IoU + 占比）。
 - 待办：真素材人眼评估（Phase 0 判读与 Phase 2 打分权重精调依赖它）；518 升级路径
   见 `docs/roadmap.md` Phase 1。

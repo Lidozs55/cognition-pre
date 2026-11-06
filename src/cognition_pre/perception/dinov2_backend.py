@@ -1,5 +1,7 @@
 """DINOv2 注意力后端：中后层 CLS→patch 自注意力多头平均（DINO 家族招牌特性：
-注意力 ≈ 对象级分割，零训练直用）。
+注意力 ≈ 对象级分割，零训练直用）。infer_world 额外产出主色世界图（NCut 谱分割，
+ncut_color，2026-11-06 集成——注意力散斑/超纳入，谱分割空间连贯；极性策略与
+判读史见 perception/ncut.py 与 roadmap）。
 
 实现说明与 Phase 1 校验清单（见 docs/roadmap.md）：
 - 权重为公开仓库（facebook/dinov2-small 等），无需 HF token。
@@ -8,9 +10,10 @@
   恰为正确值）；首次真跑打印并人工核对。
 - patch 14：224/14=16、518/14=37 均整除，patch 数必为平方数；infer 内保留校验兜底。
 - 层选择：默认仅末层（layer_start_frac=0.92 → [11]），即官方 DINO 配方。层间对照
-  与候选信号（TokenCut NCut）见 scripts/compare_heatmaps.py。
-- 耗时：output_attentions=True 会物化全部层注意力。224² CPU 可实时；
-  518² CPU 明显变慢，仅作离线对照。将来可改 hook 精取所选层（见 roadmap Phase 4）。
+  与候选信号见 scripts/compare_heatmaps.py。
+- 耗时：output_attentions=True 会物化全部层注意力。224² CPU 可实时（NCut 的 eigh
+  256² 仅毫秒级）；518² CPU 明显变慢（eigh 1369² 另计），仅作离线对照/展示机。
+  将来可改 hook 精取所选层（见 roadmap Phase 4）。
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import numpy as np
 import torch
 
 from .base import AttentionBackend
+from .ncut import ncut_map
 
 log = logging.getLogger(__name__)
 
@@ -37,10 +41,12 @@ class DINOv2AttentionBackend(AttentionBackend):
         device: str = "cpu",
         layer_start_frac: float = 0.6,
         layer_end_drop: int = 1,
+        ncut_color: bool = False,
     ) -> None:
         from transformers import AutoModel  # 延迟导入：core 安装不含 transformers
 
         self.device = device
+        self.ncut_color = bool(ncut_color)
         # 注意力热图是核心输出：必须用 eager 实现物化注意力权重
         # （transformers 5.x 默认 SDPA，output_attentions=True 也不会返回 attentions）
         self.model = AutoModel.from_pretrained(hf_repo, attn_implementation="eager")
@@ -56,28 +62,52 @@ class DINOv2AttentionBackend(AttentionBackend):
         self._mean = torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1).to(device)
         self._std = torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1).to(device)
         log.info(
-            "DINOv2 就绪: repo=%s patch_size=%s layers=%s prefix_tokens=%s device=%s",
+            "DINOv2 就绪: repo=%s patch_size=%s layers=%s prefix_tokens=%s device=%s ncut_color=%s",
             hf_repo,
             getattr(cfg, "patch_size", "?"),
             self.layers,
             self.prefix,
             device,
+            self.ncut_color,
         )
 
-    @torch.no_grad()
-    def infer(self, rgb_u8: np.ndarray) -> np.ndarray:
+    def _forward(self, rgb_u8: np.ndarray):
         x = torch.from_numpy(np.ascontiguousarray(rgb_u8)).permute(2, 0, 1)[None].float().div_(255.0)
         x = (x - self._mean) / self._std
         out = self.model(pixel_values=x, output_attentions=True)
         attns = getattr(out, "attentions", None)
         if not attns:
             raise RuntimeError("模型未返回 attentions：检查 transformers 版本（需支持 DINOv2）")
+        return out, attns
+
+    def _attn_flat(self, attns) -> np.ndarray:
+        """所选层 CLS→patch 注意力多头平均，展平 (n_patches,)。"""
         acc = None
         for i in self.layers:
             a = attns[i][0, :, 0, self.prefix :].mean(dim=0)  # CLS 行 → patch 列，多头平均
             acc = a if acc is None else acc + a
-        acc = (acc / len(self.layers)).float().cpu().numpy()
-        side = round(acc.shape[0] ** 0.5)
-        if side * side != acc.shape[0]:
-            raise RuntimeError(f"注意力 patch 数非平方数: {acc.shape[0]}")
-        return acc.reshape(side, side).astype(np.float32)
+        return (acc / len(self.layers)).float().cpu().numpy()
+
+    @staticmethod
+    def _reshape_square(flat: np.ndarray) -> np.ndarray:
+        side = round(flat.shape[0] ** 0.5)
+        if side * side != flat.shape[0]:
+            raise RuntimeError(f"注意力 patch 数非平方数: {flat.shape[0]}")
+        return flat.reshape(side, side).astype(np.float32)
+
+    @torch.no_grad()
+    def infer(self, rgb_u8: np.ndarray) -> np.ndarray:
+        _out, attns = self._forward(rgb_u8)
+        return self._reshape_square(self._attn_flat(attns))
+
+    @torch.no_grad()
+    def infer_world(self, rgb_u8: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """一次前向出 (注意力, 主色世界图)。世界图 = NCut 谱分割（perception/ncut.py，
+        极性=度数/紧凑度级联）；ncut_color=False 返回同对象（上采样只做一次）。"""
+        out, attns = self._forward(rgb_u8)
+        flat = self._attn_flat(attns)
+        attn = self._reshape_square(flat)
+        if not self.ncut_color:
+            return attn, attn
+        feat = out.last_hidden_state[0, self.prefix :]
+        return attn, ncut_map(feat, attn.shape[0])
