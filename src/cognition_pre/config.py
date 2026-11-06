@@ -33,29 +33,47 @@ class AttentionConfig:
     hf_repo: str = "facebook/dinov2-small"
     device: str = "cpu"  # cpu | cuda
     fps: float = 10.0  # 热图更新频率；中间帧复用最近热图
-    layer_start_frac: float = 0.6  # 取中后层 CLS→patch 注意力
-    layer_end_drop: int = 1  # 丢弃最后 N 层（深层易糊）
+    layer_start_frac: float = 0.92  # int(12*0.92)=11 → 仅末层 CLS→patch（官方 DINO 配方）。
+    # 同帧 A/B 定案（scripts/compare_heatmaps.py）：末层最干净，中后层背景散斑严重；registers 变体无收益
+    layer_end_drop: int = 1  # 与 start_frac 联合定层区间 [int(n*start_frac), n-end_drop)
     top_clip_pct: float = 0.05  # 归一后截掉前 5% 极值
-    use_rollout: bool = False  # 预留：跨层 rollout 对照（Phase 1 实现）
+    smooth_frac: float = 0.05  # 高斯核边长 = ceil(frac*网格边长)取奇：224²(16 网格)→1（不模糊）、
+                               # 518²(37 网格)→3；背景散斑已由 norm_floor_pct 治理，平滑只做轻度并斑。
+                               # 勿改回 sigma 语义：OpenCV 3σ 自动核（sigma=1 即 7×7）会抹平主体尖角（用户实测）
+    norm_floor_pct: float = 0.0  # 可选背景平台抑制：该分位的值归零。默认关——无直接论文依据（LOST 谱系
+                                 # 的背景阈值是符号/Otsu 类而非分位归零），且隐含"主体 <50% 画面"假设，
+                                 # 特写会误伤主体。背景泄漏困扰时 0.5 起试；0 = min-max 归一
 
 
 @dataclass
 class ColorConfig:
     hz: float = 10.0  # 主色计算频率（=数据输出频率，10fps）
-    n_clusters: int = 5
-    lam: float = 3.0  # λ：w = 1 + λ·A(x)。焦点/氛围分布分离的主杠杆：0.75 时 w∈[1,1.75]，
-                      # 质量项碾压注意力信号导致两世界趋同；3.0 时注意区权重是背景 4 倍
+    n_clusters: int = 5  # 簇数上限：K 固定是 warm-start 的前提，动态类数放合并层（见 merge_dist）
+    merge_dist: float = 0.10  # 近邻簇心合并阈值（聚类同空间、L 低权重）：同色系深浅碎片并为一族，
+    # 同色系场景自动收敛到 2-3 个候选（2026-11-06 实测反馈"类数偏多"），真多彩不丢分辨率。0 关闭
+    # 主色注意力加权：与展示路调制同形的 ramp（utils/ramp.py 同一份实现），A<lo 从该
+    # 世界剔除。权重要能压到 0——旧式 w=1+λ·A 给背景保底权重、按面积碾压主体，λ 排
+    # 不掉（实测被背景主导）；lo/hi 是两世界分离杠杆（趋同→调大 lo）。
+    weight_lo: float = 0.2
+    weight_hi: float = 0.8
     lab_weights: tuple[float, float, float] = (0.5, 1.0, 1.0)  # L 低、a/b 高
-    sample_budget: int = 12000  # 抽样像素预算：8000 时多彩场景统计不稳；12000 实测双实例 ~21ms/轮（warm-start 后）
+    sample_budget: int = 12000  # 抽样像素预算：8000 时多彩场景统计不稳；12000 实测双实例 ~21ms/轮（warm-start 后）。
+    # 按本世界面积自适应消费（掩膜全分辨率先定，抽样只发生在本世界像素上）——小主体不再饥饿
     kmeans_batch_size: int = 2048  # 大 batch 帮助 MiniBatchKMeans 早停收敛
     kmeans_n_init: int = 2
     min_mass_frac: float = 0.02
     seed: int = 0
-    # 簇切换迟滞（Phase 2；注视稳定性的时序类似物——论文 Itti & Koch 2001 的 IOR
-    # 方向相反，故不标 IOR）：挑战簇须以 (1+margin) 的分数优势才能夺主；与上一帧
-    # 主色 Lab 距离 <= dist 的候选视为"在位色"。防同屏两簇分数接近时的主色闪烁。
-    hysteresis_margin: float = 0.15
+    # 簇切换迟滞（动量调制，Phase 2；注视稳定性时序类似物——Itti & Koch 2001 的 IOR
+    # 方向相反，故不标 IOR）：挑战簇须有 (1 + margin×动量) 分数优势才夺主，动量三态
+    # （连胜攒/被压制慢泄/换景快泄）见 dominant.py _select；margin 0.15→0.10 因旧式
+    # 恒定门槛锁死过久（2026-11-05 反馈）。参考色 = 赢家 Lab 慢 EMA，Lab 距离 <= dist
+    # 视为"在位色"。
+    hysteresis_margin: float = 0.10
     hysteresis_dist: float = 0.12
+    # 保护色惩罚（center-surround 对齐，2026-11-06）：焦点对比度基准 = 上一帧氛围主色
+    # （Itti & Koch 2001 的 surround 即背景），贴背景色的候选打折；缺参照退回全帧均色。
+    # 单向接线（氛围侧不接），避免双实例互推的反馈环。
+    surround_contrast: bool = True
 
 
 @dataclass

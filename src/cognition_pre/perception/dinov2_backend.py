@@ -7,8 +7,8 @@
   切片偏移取 config.num_prefix_tokens（该 config 无此字段，getattr 缺省按 1 处理，
   恰为正确值）；首次真跑打印并人工核对。
 - patch 14：224/14=16、518/14=37 均整除，patch 数必为平方数；infer 内保留校验兜底。
-- 层选择：取 [num_layers*layer_start_frac, num_layers-layer_end_drop) 的多头平均；
-  深层易糊，末层默认丢弃。备选对照：跨层 rollout（Phase 1 实现）。
+- 层选择：默认仅末层（layer_start_frac=0.92 → [11]），即官方 DINO 配方。层间对照
+  与候选信号（TokenCut NCut）见 scripts/compare_heatmaps.py。
 - 耗时：output_attentions=True 会物化全部层注意力。224² CPU 可实时；
   518² CPU 明显变慢，仅作离线对照。将来可改 hook 精取所选层（见 roadmap Phase 4）。
 """
@@ -46,7 +46,9 @@ class DINOv2AttentionBackend(AttentionBackend):
         self.model = AutoModel.from_pretrained(hf_repo, attn_implementation="eager")
         self.model.eval().to(device)
         cfg = self.model.config
-        self.prefix = int(getattr(cfg, "num_prefix_tokens", 1))
+        # 兼容两种字段：普通版 num_prefix_tokens（缺省 1=仅 CLS）；registers 版只有
+        # num_register_tokens（CLS+registers 都在 patch 列之前），公式覆盖两者
+        self.prefix = int(getattr(cfg, "num_prefix_tokens", 1 + getattr(cfg, "num_register_tokens", 0)))
         n_layers = int(cfg.num_hidden_layers)
         start = int(n_layers * layer_start_frac)
         end = max(start + 1, n_layers - max(0, layer_end_drop))

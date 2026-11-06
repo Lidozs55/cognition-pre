@@ -16,30 +16,42 @@ attention:
   hf_repo: facebook/dinov2-small  # 公开仓库，无需 HF token
   device: cpu            # cpu | cuda
   fps: 10.0              # 热图更新频率；中间帧复用最近热图
-  layer_start_frac: 0.6  # 取中后层 CLS→patch 注意力的多头平均
-  layer_end_drop: 1      # 丢弃最后 N 层（深层易糊成一片）
+  layer_start_frac: 0.92 # int(12*0.92)=11 → 仅末层 CLS→patch（官方 DINO 配方；同帧 A/B 定案末层
+                         # 最干净，中后层背景散斑严重——scripts/compare_heatmaps.py）
+  layer_end_drop: 1      # 与 start_frac 联合定层区间 [int(n*start_frac), n-end_drop)
   top_clip_pct: 0.05     # 归一后截掉前 5% 极值，防"注意力孤斑"通吃
-  use_rollout: false     # 预留：跨层 rollout 对照（Phase 1 实现）
+  smooth_frac: 0.05      # 高斯核边长 = ceil(frac*网格边长)取奇：224²→1（不模糊）、518²→3；0 关闭。
+                         # 勿改回 sigma 语义：OpenCV 3σ 自动核（sigma=1 即 7×7）抹平主体尖角（用户实测）
+  norm_floor_pct: 0.0    # 可选背景平台抑制：该分位值归零。默认关（无直接论文依据；主体占画面过半会误伤），
+                         # 背景泄漏困扰时 0.5 起试；0 = min-max 归一
 
 color:
   hz: 10.0                 # 主色计算频率（=数据输出频率，10fps）
-  n_clusters: 5
-  lam: 3.0                 # λ：w = 1 + λ·A(x)。两世界分离的主杠杆：0.75 时 w∈[1,1.75] 质量项碾压
-                           # 注意力 → 焦点/氛围趋同；3.0 时注意区权重是背景 4 倍
+  n_clusters: 5            # 簇数上限：K 固定是 warm-start 的前提，动态类数放合并层
+  merge_dist: 0.10         # 近邻簇心合并阈值（聚类同空间）：同色系深浅碎片并为一族——
+                           # 同色系场景自动 2-3 个候选（实测反馈"类数偏多"）。0 关闭
+  weight_lo: 0.2           # 主色加权 ramp（与展示路调制同形）：A<lo 权重记 0（从该世界剔除）、
+  weight_hi: 0.8           # A>=hi 记 1、中间线性。权重要能压到 0——旧式 w=1+λ·A 背景保底权重
+                           # 按面积碾压主体；趋同→调大 lo
   lab_weights: [0.5, 1.0, 1.0]  # Lab 空间特征权重：L 低、a/b 高
-  sample_budget: 12000     # 单次聚类抽样像素预算：8000 时多彩场景统计不稳；12000 实测双实例 ~21ms/轮（warm-start 后）
+  sample_budget: 12000     # 单次聚类抽样像素预算：8000 时多彩场景统计不稳；12000 实测双实例 ~21ms/轮（warm-start 后）。
+                           # 按本世界面积自适应消费（抽样只发生在本世界像素上），小主体不再饥饿
   kmeans_batch_size: 2048
   kmeans_n_init: 2
   min_mass_frac: 0.02      # 质量占比过小的簇丢弃
   seed: 0
-  hysteresis_margin: 0.15  # 簇切换迟滞：挑战簇须有 (1+margin) 分数优势才夺主
-  hysteresis_dist: 0.12    # 与上帧主色归一 Lab 距离 <= 该值的候选视为"在位色"
+  hysteresis_margin: 0.10  # 簇切换迟滞（动量调制）：挑战簇须有 (1+margin×动量) 分数优势才夺主；
+                           # 动量三态（连胜攒/被压制慢泄/换景快泄）见 dominant.py _select
+  hysteresis_dist: 0.12    # 与动量参考色（赢家 Lab 慢 EMA）归一 Lab 距离 <= 该值的候选视为"在位色"
+  surround_contrast: true  # 保护色惩罚（center-surround）：焦点对比度基准 = 上一帧氛围主色——
+                           # 贴背景色的候选打折（Itti & Koch 2001 的 surround 即背景）；缺参照
+                           # 退回全帧均色；单向接线避免双实例互推
 
 modulation:
-  focus_lo: 0.25     # 焦点流：A <= lo 全黑（black_floor 残亮）
-  focus_hi: 0.65     # 焦点流：A >= hi 原始亮度；[lo, hi] 之间线性过渡
-  ambient_lo: 0.25   # 氛围流：(1−A) <= lo 全黑
-  ambient_hi: 0.65   # 氛围流：(1−A) >= hi 原始亮度
+  focus_lo: 0.2     # 焦点流：A <= lo 全黑（black_floor 残亮）
+  focus_hi: 0.8     # 焦点流：A >= hi 原始亮度；[lo, hi] 之间线性过渡
+  ambient_lo: 0.2   # 氛围流：(1−A) <= lo 全黑
+  ambient_hi: 0.8   # 氛围流：(1−A) >= hi 原始亮度
   black_floor: 0.0   # mask=0 时的残亮比例（0=真全黑）
   enabled: true
 

@@ -17,13 +17,7 @@ import cv2
 import numpy as np
 
 from ..config import ModulationConfig
-
-
-def _ramp(s: np.ndarray, lo: float, hi: float) -> np.ndarray:
-    """[lo, hi] 双阈值分段线性：<=lo → 0，>=hi → 1，中间线性；hi<=lo 时退化为阶跃。"""
-    if hi <= lo:
-        return (s >= hi).astype(np.float32)
-    return np.clip((s - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+from ..utils.ramp import ramp
 
 
 class DualStreamModulator:
@@ -38,8 +32,8 @@ class DualStreamModulator:
     def apply(self, frame_u8: np.ndarray, s01: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """返回 (focus_stream, ambient_stream)，与输入同尺寸同格式。s01 为 A(x) [0,1]。"""
         a = np.clip(np.asarray(s01, dtype=np.float32), 0.0, 1.0)
-        m_focus = self.floor + (1.0 - self.floor) * _ramp(a, self.focus_lo, self.focus_hi)
-        m_ambient = self.floor + (1.0 - self.floor) * _ramp(1.0 - a, self.ambient_lo, self.ambient_hi)
+        m_focus = self.floor + (1.0 - self.floor) * ramp(a, self.focus_lo, self.focus_hi)
+        m_ambient = self.floor + (1.0 - self.floor) * ramp(1.0 - a, self.ambient_lo, self.ambient_hi)
         img = frame_u8.astype(np.float32)
         # rint 后再转 uint8：astype 直接截断会把 200×0.5≈100.00004 这类边界值截成 99
         focus = np.clip(np.rint(img * m_focus[..., None]), 0, 255).astype(np.uint8)

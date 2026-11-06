@@ -23,8 +23,8 @@ OBS 虚拟摄像头（任意片源，30 fps）
         ├──────────────────────────────┐
         ▼                              ▼
 【主色计算，10 Hz】               【双流调制，全帧率】
-  焦点色: 原图 × w=1+λA             焦点流: 低注意力全黑、高注意力原亮度
-  氛围色: 原图 × w=1+λ(1−A)         氛围流: 反向（对 1−A 同样阈值化）
+  焦点色: 原图 × w=ramp(A)           焦点流: 低注意力全黑、高注意力原亮度
+  氛围色: 原图 × w=ramp(1−A)         氛围流: 反向（对 1−A 同样阈值化）
         │                              │
         ▼                              ▼
   加权聚类 + 打分              视频输出（纯展示，
@@ -100,8 +100,8 @@ DINOv2 权重是公开仓库（无需 token / 许可审批）：
 ```bash
 uv sync --extra model   # CPU 版 torch；有 NVIDIA 卡时可换 CUDA 版（按 pytorch.org 官方索引装）
 uv run cognition-pre run --dinov2 --source 1 --device cpu
-# 显存富余可上 518：--size 518（DINOv2 为 patch 14，518/14=37 整除）
-# 展示机（GPU）热图 A/B：--repo facebook/dinov2-base（ViT-B/14，86M；本机 CPU 跑不动）
+# 展示机（GPU）推荐：--size 518（热图判读优于 224；patch 14，518/14=37 整除；本机 CPU 518 无法 10fps）
+# 热图再升级 A/B：--repo facebook/dinov2-base（ViT-B/14，86M；本机 CPU 跑不动）
 ```
 
 接入/更换注意力模型后，先跑单帧热图校验并人眼判读（落盘"裁切帧 | 热图叠加"并排图）：
@@ -150,9 +150,11 @@ CLI 标志可临时覆盖。常用项：
 | `attention.fps` | 10 | 热图更新频率，中间帧复用最近热图 |
 | `attention.top_clip_pct` | 0.05 | 归一后截掉前 5% 极值，防孤斑通吃 |
 | `color.hz` | 10 | 主色计算频率（=数据输出频率） |
-| `color.lam` | 3.0 | 注意力权重强度 λ：w = 1 + λ·A(x)；焦点/氛围趋同就调大 |
-| `color.sample_budget` | 12000 | 单实例聚类抽样像素预算（实测双实例 ~21ms/轮） |
-| `color.hysteresis_margin` | 0.15 | 簇切换迟滞：挑战簇须有 (1+margin) 分数优势才夺主 |
+| `color.weight_lo / weight_hi` | 0.2 / 0.8 | 主色注意力加权 ramp（与调制同形）：A<lo 权重记 0（从该世界剔除）、A≥hi 记 1、中间线性；焦点/氛围趋同→调大 lo |
+| `color.n_clusters / merge_dist` | 5 / 0.10 | 聚类簇数上限 / 近邻簇心合并阈值：同色系深浅碎片并为一族（动态类数——同色系场景自动 2-3 族，真多彩不丢分辨率；0 关闭） |
+| `color.surround_contrast` | true | 保护色惩罚：焦点对比度基准 = 上一帧氛围主色，贴背景色的候选打折（Itti & Koch center-surround；`--no-surround-contrast` A/B 对照） |
+| `color.sample_budget` | 12000 | 单实例聚类抽样像素预算，按本世界面积自适应消费（小主体也得满预算；实测双实例 ~21ms/轮） |
+| `color.hysteresis_margin` | 0.10 | 簇切换迟滞（动量调制）：挑战簇须有 (1+margin×动量) 分数优势才夺主；动量三态：连胜攒/被压制慢泄/换景快泄 |
 | `color.lab_weights` | [0.5,1,1] | Lab 特征权重：L 低、a/b 高 |
 | `modulation.focus_lo / focus_hi` | 0.25 / 0.65 | 焦点流阈值：A≤lo 全黑、A≥hi 原亮度，中间线性（ambient_* 同理对 1−A） |
 | `modulation.black_floor` | 0.0 | mask=0 残亮比例（0=真全黑） |

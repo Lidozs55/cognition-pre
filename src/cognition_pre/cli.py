@@ -38,7 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", help="cpu | cuda")
     p.add_argument("--attention-fps", type=float, help="热图更新频率（默认 10）")
     p.add_argument("--color-hz", type=float, help="主色计算频率（默认 10）")
-    p.add_argument("--lambda", dest="lam", type=float, help="注意力权重强度 λ（默认 3.0；趋同就调大）")
+    p.add_argument("--weight-lo", type=float, help="主色加权下阈值：注意力<lo 权重记 0（从该世界剔除，默认 0.2）")
+    p.add_argument("--weight-hi", type=float, help="主色加权上阈值：注意力>=hi 权重记 1（默认 0.8）")
+    p.add_argument("--n-clusters", type=int, help="聚类簇数上限（近邻簇心会按 merge_dist 合并，默认 5）")
+    p.add_argument("--merge-dist", type=float, help="近邻簇心合并阈值：同色系深浅碎片并为一族（动态类数，默认 0.10；0 关闭）")
+    p.add_argument("--no-surround-contrast", action="store_true", help="关闭保护色惩罚（焦点对比度基准退回全帧均色，A/B 对照用）")
     p.add_argument("--mod-lo", type=float, help="调制下阈值：注意力<=lo 全黑（双流共用，默认 0.25）")
     p.add_argument("--mod-hi", type=float, help="调制上阈值：注意力>=hi 原始亮度（双流共用，默认 0.65）")
     p.add_argument("--fullscreen", action="store_true", help="启动即全屏（运行中按 f 切换）")
@@ -85,8 +89,16 @@ def _apply_overrides(cfg: AppConfig, args: argparse.Namespace) -> None:
         set_or_die("attention.fps", args.attention_fps)
     if args.color_hz is not None:
         set_or_die("color.hz", args.color_hz)
-    if args.lam is not None:
-        set_or_die("color.lam", args.lam)
+    if args.weight_lo is not None:
+        set_or_die("color.weight_lo", args.weight_lo)
+    if args.weight_hi is not None:
+        set_or_die("color.weight_hi", args.weight_hi)
+    if args.n_clusters is not None:
+        set_or_die("color.n_clusters", args.n_clusters)
+    if args.merge_dist is not None:
+        set_or_die("color.merge_dist", args.merge_dist)
+    if args.no_surround_contrast:
+        set_or_die("color.surround_contrast", False)
     if args.mod_lo is not None:
         set_or_die("modulation.focus_lo", args.mod_lo)
         set_or_die("modulation.ambient_lo", args.mod_lo)

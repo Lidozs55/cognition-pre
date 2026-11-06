@@ -43,5 +43,15 @@ uv run cognition-pre doctor                                   # 环境/摄像头
   `--dinov2` 真权重全链路已在 OBS 虚拟摄像头 + CPU 上跑通（224² 实测 ~18fps，热图
   判读通过）。注意：transformers 5.x 必须 `attn_implementation="eager"` 才返回注意力
   权重（已固化在 backend，改动加载逻辑时勿丢）。
-- 待办：真素材人眼评估（Phase 0 判读与 Phase 2 打分权重精调依赖它）；518²/224² 稳定性
-  对比与 rollout 对照见 `docs/roadmap.md` Phase 1。
+- 2026-11-04：热图信号经同帧 A/B + 真素材判读定为**末层** CLS→patch
+  （`layer_start_frac=0.92`）；PCA/feat-norm 不可行已弃用；TokenCut-lite NCut 判读
+  未通过（稳定多纳入背景）不集成；`norm_floor_pct` 分位归零经审查无直接论文依据，
+  默认关闭。
+  展示机（GPU）热图升级路径：`--size 518`（用户判读优于 224）。
+- 2026-11-05/06：主色路四处结构性改动——加权 ramp 化（w=1+λ·A 退役，背景可压到
+  权重 0）、迟滞动量化（三态，`hysteresis_margin` 0.10）、近邻簇心合并（动态类数，
+  `merge_dist`）+ 保护色惩罚（焦点对比度基准 = 上一帧氛围主色，center-surround
+  对齐，`surround_contrast`）、抽样预算自适应（全分辨率掩膜 + 本世界密度自适应，
+  小主体不再饥饿）。设计取向：换基准、不堆项。
+- 待办：真素材人眼评估（Phase 0 判读与 Phase 2 打分权重精调依赖它）；518 升级路径
+  见 `docs/roadmap.md` Phase 1。

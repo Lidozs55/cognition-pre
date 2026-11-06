@@ -68,7 +68,7 @@ def main() -> int:
     model_rgb = pre.to_model_rgb(crop)
 
     backend = build_backend(cfg.attention)
-    post = HeatmapPostprocessor(cfg.attention.top_clip_pct)
+    post = HeatmapPostprocessor(cfg.attention.top_clip_pct, cfg.attention.smooth_frac, cfg.attention.norm_floor_pct)
 
     backend.infer(model_rgb)  # 预热（首次调用含惰性初始化）
     t0 = time.perf_counter()

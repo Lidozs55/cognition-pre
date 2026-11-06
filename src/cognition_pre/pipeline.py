@@ -36,7 +36,9 @@ class RealtimePipeline:
         self.cfg = cfg
         self.pre = Preprocessor(cfg.preprocess)
         self.backend = build_backend(cfg.attention)
-        self.post = HeatmapPostprocessor(cfg.attention.top_clip_pct)
+        self.post = HeatmapPostprocessor(
+            cfg.attention.top_clip_pct, cfg.attention.smooth_frac, cfg.attention.norm_floor_pct
+        )
         self.focus_cm = WeightedDominantColor(cfg.color, invert=False, name="focus")
         self.ambient_cm = WeightedDominantColor(cfg.color, invert=True, name="ambient")
         self.mod = DualStreamModulator(cfg.modulation)
@@ -157,6 +159,10 @@ class RealtimePipeline:
 
     def _color_loop(self) -> None:
         keeper = RateKeeper(self.cfg.color.hz)
+        # 上一帧氛围主色 lab01 → 焦点实例的对比度基准（center-surround：贴背景色的
+        # 候选打折，保护色不显眼）。单向（氛围侧不接焦点参照），无反馈环；首帧为
+        # None，实例内部退回全帧均色。
+        ambient_ref: tuple | None = None
         try:
             while not self.stop_evt.is_set():
                 keeper.sleep_next()
@@ -166,8 +172,13 @@ class RealtimePipeline:
                     continue
                 attn = apair[1]
                 rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                fres = self.focus_cm.compute(rgb, attn)
+                fres = self.focus_cm.compute(
+                    rgb, attn,
+                    surround_ref=ambient_ref if self.cfg.color.surround_contrast else None,
+                )
                 ares = self.ambient_cm.compute(rgb, attn)
+                if ares.best is not None:
+                    ambient_ref = ares.best.lab01
                 if fres.best is None or ares.best is None:
                     continue
                 # 置信度 = 主色支配度（胜者得分占全簇总分比例），给下游灯带做淡入淡出依据
